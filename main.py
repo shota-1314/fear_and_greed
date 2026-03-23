@@ -4,8 +4,8 @@ import pandas as pd
 from datetime import datetime
 from dotenv import load_dotenv
 
-from fetcher import fetch_ohlcv, scrape_margin_ratio
-from db import upsert_margin_ratio, get_margin_ratios, upsert_daily_score
+from fetcher import fetch_ohlcv, scrape_margin_ratios
+from db import get_latest_margin_date, upsert_margin_ratios, get_margin_ratios, upsert_daily_score
 from calculator import calculate_indicators
 
 # ログ設定
@@ -16,20 +16,39 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 def process_ticker(ticker: str):
-    """
-    1銘柄に対するFear & Greed Index計算と保存のフロー
-    """
     logger.info(f"--- Starting processing for {ticker} ---")
     
     try:
-        # 1. & 2. 株探から信用倍率をスクレイピングしてDBにUpsert
+        # 1. & 2. 株探データの差分更新ロジック
         try:
-            date_str, margin_ratio = scrape_margin_ratio(ticker)
-            upsert_margin_ratio(ticker, date_str, margin_ratio)
+            # DBに保存されている最新の日付を取得
+            latest_db_date = get_latest_margin_date(ticker)
+            if latest_db_date:
+                logger.info(f"Latest margin date in DB for {ticker}: {latest_db_date}")
+            else:
+                logger.info(f"No previous margin data found for {ticker}. Will run initial bulk insert.")
+
+            # 株探から過去約30週分をスクレイピング
+            scraped_ratios = scrape_margin_ratios(ticker)
+
+            # DBの最新日付より「新しい」データのみを抽出
+            new_ratios = []
+            for item in scraped_ratios:
+                # DBが空(初回) または スクレイピングした日付がDBの最新日付より未来の場合
+                if latest_db_date is None or item["date"] > latest_db_date:
+                    new_ratios.append(item)
+
+            # 未登録のデータがあればDBへ一括保存
+            if new_ratios:
+                logger.info(f"Found {len(new_ratios)} new margin ratio records for {ticker}. Upserting...")
+                upsert_margin_ratios(ticker, new_ratios)
+            else:
+                logger.info(f"No new margin ratio data found for {ticker}. DB is up to date.")
+
         except Exception as e:
             logger.warning(f"Failed to scrape/upsert margin ratio for {ticker}. Continuing with historical data. Error: {e}")
         
-        # 3. DBから過去の信用倍率を取得
+        # 3. DBから過去の信用倍率を取得 (ここは既存のままでOK)
         margin_df = get_margin_ratios(ticker)
         
         # 4. yfinanceから過去500営業日分のOHLCVを取得

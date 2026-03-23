@@ -32,43 +32,60 @@ def fetch_ohlcv(ticker: str, days: int = 500) -> pd.DataFrame:
         logger.error(f"Failed to fetch OHLCV for {ticker}: {e}")
         raise
 
-def scrape_margin_ratio(ticker: str) -> tuple[str, float]:
+def scrape_margin_ratios(ticker: str) -> list[dict]:
     """
-    株探から最新の信用倍率をスクレイピングする
-    ※複雑なページネーション処理はモック化し、最新の1件を取得する想定
-    戻り値: (日付文字列(YYYY-MM-DD), 信用倍率)
+    株探の「信用残系列」ページから過去約30週分の信用倍率をスクレイピングする
+    戻り値: [{"date": "YYYY-MM-DD", "margin_ratio": 1.5 or None}, ...]
     """
-    # 銘柄コードから「.T」などを除去（例: 3697.T -> 3697）
     base_ticker = ticker.split('.')[0]
-    url = f"https://s.kabutan.jp/stocks/{base_ticker}/historical_prices/daily/"
+    url = f"https://kabutan.jp/stock/kabuka?code={base_ticker}&ashi=shin"
     
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
     }
     
     try:
-        logger.info(f"Scraping margin ratio for {ticker} from {url}")
+        logger.info(f"Scraping multiple margin ratios for {ticker} from {url}")
         response = requests.get(url, headers=headers, timeout=10)
         response.raise_for_status()
         
         soup = BeautifulSoup(response.content, 'html.parser')
         
-        # --- モック実装 ---
-        # 実際のDOM構造に合わせてパースする必要がありますが、ここではモック値を返します。
-        # 本番環境では、soup.find() 等を用いて正しいテーブルのセルから日付と倍率を抽出してください。
-        # 例:
-        # table = soup.find('table', class_='historical_prices')
-        # row = table.find_all('tr')[1] # 最新行
-        # date_str = row.find_all('td')[0].text
-        # margin_ratio = float(row.find_all('td')[X].text)
+        # テーブルの全行を取得
+        rows = soup.select('#stock_kabuka_table table.stock_kabuka_dwm tbody tr')
+        if not rows:
+            raise ValueError("株探のページから対象のテーブル行が見つかりませんでした。")
+            
+        results = []
         
-        # モックとして、本日日付とダミーの倍率を返す
-        mock_date = datetime.now().strftime("%Y-%m-%d")
-        mock_ratio = 1.5 # ダミー値
-        
-        logger.info(f"Scraped margin ratio: {mock_ratio} on {mock_date} (MOCK)")
-        return mock_date, mock_ratio
+        # 全行をループ処理してリストに格納
+        for row in rows:
+            time_tag = row.select_one('th time')
+            if not time_tag:
+                continue
+                
+            raw_date = time_tag.text.strip()
+            date_str = datetime.strptime(raw_date, "%y/%m/%d").strftime("%Y-%m-%d")
+            
+            tds = row.find_all('td')
+            if len(tds) < 8:
+                continue
+                
+            ratio_str = tds[7].text.strip()
+            
+            if ratio_str == '-':
+                margin_ratio = None
+            else:
+                margin_ratio = float(ratio_str.replace(',', ''))
+                
+            results.append({
+                "date": date_str,
+                "margin_ratio": margin_ratio
+            })
+            
+        logger.info(f"Successfully scraped {len(results)} weeks of data.")
+        return results
         
     except Exception as e:
-        logger.error(f"Failed to scrape margin ratio for {ticker}: {e}")
+        logger.error(f"Failed to scrape margin ratios for {ticker}: {e}")
         raise

@@ -32,22 +32,44 @@ def upsert_margin_ratio(ticker: str, date_str: str, margin_ratio: float):
         logger.error(f"Failed to upsert margin ratio for {ticker}: {e}")
         raise
 
-def get_margin_ratios(ticker: str) -> pd.DataFrame:
+def get_latest_margin_date(ticker: str) -> str | None:
     """
-    Supabaseから過去の信用倍率を取得し、DataFrameとして返す
+    指定銘柄のDBに保存されている最新の信用倍率の日付を取得する
     """
     try:
-        response = supabase.table("weekly_margin_ratios").select("*").eq("ticker", ticker).order("date").execute()
-        data = response.data
-        if not data:
-            return pd.DataFrame(columns=["date", "margin_ratio"])
-        
-        df = pd.DataFrame(data)
-        df["date"] = pd.to_datetime(df["date"])
-        df = df.set_index("date")
-        return df[["margin_ratio"]]
+        # 日付の降順で1件だけ取得
+        response = supabase.table("weekly_margin_ratios").select("date").eq("ticker", ticker).order("date", desc=True).limit(1).execute()
+        if response.data:
+            return response.data[0]["date"]
+        return None
     except Exception as e:
-        logger.error(f"Failed to fetch margin ratios for {ticker}: {e}")
+        logger.error(f"Failed to fetch latest margin date for {ticker}: {e}")
+        return None
+
+def upsert_margin_ratios(ticker: str, ratios_data: list[dict]):
+    """
+    複数件の信用倍率データをSupabaseに一括Upsertする
+    ratios_data: [{"date": "YYYY-MM-DD", "margin_ratio": 1.5}, ...]
+    """
+    if not ratios_data:
+        return
+
+    try:
+        # DB保存用のフォーマットに整形
+        insert_data = [
+            {
+                "ticker": ticker,
+                "date": item["date"],
+                "margin_ratio": item["margin_ratio"]
+            }
+            for item in ratios_data
+        ]
+        # リストを渡すことで、Supabaseが一括Upsert(Bulk Insert)を行ってくれます
+        response = supabase.table("weekly_margin_ratios").upsert(insert_data).execute()
+        logger.info(f"Successfully upserted {len(insert_data)} margin ratios for {ticker}")
+        return response
+    except Exception as e:
+        logger.error(f"Failed to upsert margin ratios for {ticker}: {e}")
         raise
 
 def upsert_daily_score(date_str: str, ticker: str, raw_fgi: float, filtered_fgi: float, indicators: dict):
