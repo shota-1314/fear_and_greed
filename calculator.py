@@ -36,7 +36,8 @@ def calculate_indicators(df: pd.DataFrame) -> pd.DataFrame:
     # C5 (ボリュームレシオ): 過去25日間の「株価上昇日の出来高合計」 / 「株価下落日の出来高合計」
     up_vol = (df['Volume'].where(delta > 0, 0)).rolling(window=25).sum()
     down_vol = (df['Volume'].where(delta < 0, 0)).rolling(window=25).sum()
-    df['C5_raw'] = up_vol / down_vol
+    # calculator.py の修正
+    df['C5_raw'] = up_vol / down_vol.replace(0, np.nan)
     
     # C6 (年間価格レンジ): (当日終値 - 過去252日の最安値) / (過去252日の最高値 - 過去252日の最安値)
     low_252 = df['Low'].rolling(window=252).min()

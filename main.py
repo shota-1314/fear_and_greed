@@ -58,9 +58,10 @@ def process_ticker(ticker: str):
             return
             
         # インデックスを日付のみ（時刻なし）に揃える
-        ohlcv_df.index = pd.to_datetime(ohlcv_df.index).normalize()
+        # main.py の修正（2箇所）
+        ohlcv_df.index = pd.to_datetime(ohlcv_df.index).normalize().tz_localize(None)
         if not margin_df.empty:
-            margin_df.index = pd.to_datetime(margin_df.index).normalize()
+            margin_df.index = pd.to_datetime(margin_df.index).normalize().tz_localize(None)
             
         # 5. 信用倍率を日次にリサンプル（ffill）してOHLCVに結合
         if not margin_df.empty:
