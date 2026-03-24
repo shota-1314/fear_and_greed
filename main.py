@@ -1,8 +1,13 @@
 import os
 import logging
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from dotenv import load_dotenv
+import requests
+import jpholiday # 祝日判定用に追加
+
+# JST（日本標準時）の定義
+JST = timezone(timedelta(hours=9), 'JST')
 
 from fetcher import fetch_ohlcv, scrape_margin_ratios
 from db import get_latest_margin_date, upsert_margin_ratios, get_margin_ratios, upsert_daily_score
@@ -123,17 +128,97 @@ def process_ticker(ticker: str):
     except Exception as e:
         logger.error(f"Error processing {ticker}: {e}", exc_info=True)
 
+# --- main.py の末尾 ---
+
 if __name__ == "__main__":
     load_dotenv()
     
-    # 対象銘柄リスト（環境変数から取得、またはデフォルト値）
-    # 例: "3697.T,7203.T,9984.T"
-    tickers_env = os.getenv("TARGET_TICKERS", "3697.T")
-    tickers = [t.strip() for t in tickers_env.split(",") if t.strip()]
+    # ==========================================
+    # 1. 営業日判定（本番環境のみスキップする）
+    # ==========================================
+    # Render等の本番環境では環境変数 ENV=production を設定する想定
+    is_production = os.getenv("ENV") == "production"
     
-    logger.info(f"Starting batch job for {len(tickers)} tickers: {tickers}")
+    if is_production:
+        now_jst = datetime.now(JST)
+        # 土日（5:土, 6:日）または 日本の祝日か判定
+        if now_jst.weekday() >= 5 or jpholiday.is_holiday(now_jst):
+            logger.info(f"Today ({now_jst.strftime('%Y-%m-%d')}) is a weekend or public holiday in Japan. Skipping execution.")
+            exit(0) # 処理を終了する
+        else:
+            logger.info("Today is a business day. Proceeding with execution.")
+    else:
+        logger.info("Running in Local environment. Skipping holiday check.")
+
+    # ==========================================
+    # 2. GAS連携 ＆ FGIバッチ処理
+    # ==========================================
+    GAS_URL = os.getenv("GAS_WEB_APP_URL")
+    if not GAS_URL:
+        logger.error("GAS_WEB_APP_URL is not set.")
+        exit(1)
     
-    for ticker in tickers:
-        process_ticker(ticker)
+    logger.info("Fetching target tickers from Google Spreadsheet...")
+    try:
+        response = requests.get(f"{GAS_URL}?action=get_tickers")
+        response.raise_for_status()
+        tickers = response.json()
+        logger.info(f"Successfully fetched {len(tickers)} tickers.")
+    except Exception as e:
+        logger.error(f"Failed to fetch tickers: {e}")
+        tickers = []
+    
+    if tickers:
+        logger.info("Starting batch processing...")
+        for ticker in tickers:
+            process_ticker(str(ticker).strip())
+            
+        logger.info("Batch processing completed.")
         
-    logger.info("Batch job finished.")
+        logger.info("Triggering GAS to update the Results sheet...")
+        try:
+            requests.post(GAS_URL, json={"action": "update_results"}).raise_for_status()
+            logger.info("GAS triggered successfully.")
+        except Exception as e:
+            logger.error(f"Failed to trigger GAS: {e}")
+
+    # ==========================================
+    # 3. LINEへ完了通知をブロードキャスト送信
+    # ==========================================
+    line_token = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
+    spreadsheet_url = os.getenv("SPREADSHEET_URL", "（URL未設定）")
+
+    if line_token:
+        logger.info("Sending broadcast message to LINE...")
+        
+        # LINEに送信するメッセージの内容
+        message_text = (
+            f"📊 本日のFear & Greed Index 算出完了\n\n"
+            f"対象銘柄（{len(tickers)}件）のデータ更新とスプレッドシートへの反映が完了しました。\n\n"
+            f"▼最新の結果シートはこちら\n{spreadsheet_url}"
+        )
+        
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {line_token}"
+        }
+        payload = {
+            "messages": [
+                {
+                    "type": "text",
+                    "text": message_text
+                }
+            ]
+        }
+        
+        try:
+            # Broadcast API（Botを友だち追加している人・参加しているグループ全員に送信）
+            res = requests.post("https://api.line.me/v2/bot/message/broadcast", headers=headers, json=payload)
+            res.raise_for_status()
+            logger.info("Successfully sent LINE broadcast message.")
+        except Exception as e:
+            logger.error(f"Failed to send LINE message: {e}")
+    else:
+        logger.info("LINE_CHANNEL_ACCESS_TOKEN is not set. Skipping LINE notification.")
+
+    logger.info("All pipeline finished.")
