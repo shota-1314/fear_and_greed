@@ -21,35 +21,36 @@ def process_ticker(ticker: str):
     try:
         # 1. & 2. 株探データの差分更新ロジック
         try:
-            # DBに保存されている最新の日付を取得
-            latest_db_date = get_latest_margin_date(ticker)
-            if latest_db_date:
-                logger.info(f"Latest margin date in DB for {ticker}: {latest_db_date}")
+            # DBに保存されている【すべての日付】を取得し、検索の速いSet（集合）にしておく
+            margin_df = get_margin_ratios(ticker)
+            existing_dates = set(margin_df.index.strftime("%Y-%m-%d").tolist()) if not margin_df.empty else set()
+
+            if existing_dates:
+                logger.info(f"Found {len(existing_dates)} existing margin ratio records in DB for {ticker}.")
             else:
                 logger.info(f"No previous margin data found for {ticker}. Will run initial bulk insert.")
 
-            # 株探から過去約30週分をスクレイピング
+            # 株探から複数ページ分（約60週分）をスクレイピング
             scraped_ratios = scrape_margin_ratios(ticker)
 
-            # DBの最新日付より「新しい」データのみを抽出
+            # DBに存在しない（未登録の）データのみを差分抽出
             new_ratios = []
             for item in scraped_ratios:
-                # DBが空(初回) または スクレイピングした日付がDBの最新日付より未来の場合
-                if latest_db_date is None or item["date"] > latest_db_date:
+                if item["date"] not in existing_dates:
                     new_ratios.append(item)
 
             # 未登録のデータがあればDBへ一括保存
             if new_ratios:
                 logger.info(f"Found {len(new_ratios)} new margin ratio records for {ticker}. Upserting...")
                 upsert_margin_ratios(ticker, new_ratios)
+                
+                # 過去データが追加されたので、その後のC3計算のためにDBから最新状態を再取得する
+                margin_df = get_margin_ratios(ticker)
             else:
                 logger.info(f"No new margin ratio data found for {ticker}. DB is up to date.")
 
         except Exception as e:
             logger.warning(f"Failed to scrape/upsert margin ratio for {ticker}. Continuing with historical data. Error: {e}")
-        
-        # 3. DBから過去の信用倍率を取得 (ここは既存のままでOK)
-        margin_df = get_margin_ratios(ticker)
         
         # 4. yfinanceから過去500営業日分のOHLCVを取得
         ohlcv_df = fetch_ohlcv(ticker, days=500)

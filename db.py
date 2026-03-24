@@ -90,3 +90,21 @@ def upsert_daily_score(date_str: str, ticker: str, raw_fgi: float, filtered_fgi:
     except Exception as e:
         logger.error(f"Failed to upsert daily score for {ticker}: {e}")
         raise
+    
+def get_margin_ratios(ticker: str) -> pd.DataFrame:
+    """
+    Supabaseから過去の信用倍率を取得し、DataFrameとして返す
+    """
+    try:
+        response = supabase.table("weekly_margin_ratios").select("*").eq("ticker", ticker).order("date").execute()
+        data = response.data
+        if not data:
+            return pd.DataFrame(columns=["date", "margin_ratio"])
+        
+        df = pd.DataFrame(data)
+        df["date"] = pd.to_datetime(df["date"])
+        df = df.set_index("date")
+        return df[["margin_ratio"]]
+    except Exception as e:
+        logger.error(f"Failed to fetch margin ratios for {ticker}: {e}")
+        raise
