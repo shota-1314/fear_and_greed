@@ -173,6 +173,12 @@ if __name__ == "__main__":
         for ticker in tickers:
             process_ticker(str(ticker).strip())
             
+            # 【追加】Yahoo!ファイナンスのアクセス制限（Rate Limit）を回避するため、
+            # 1銘柄の処理が終わるごとに3秒間待機する
+            import time # (念のためここでインポートしても動作します)
+            logger.info(f"Sleeping for 2 seconds to avoid rate limits...")
+            time.sleep(2)
+            
         logger.info("Batch processing completed.")
         
         logger.info("Triggering GAS to update the Results sheet...")
