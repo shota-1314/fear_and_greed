@@ -3,7 +3,8 @@ name: Deploy to Shin VPS
 on:
   push:
     branches:
-      - main # mainブランチに変更がプッシュされた時に実行
+      - main
+  workflow_dispatch:
 
 jobs:
   deploy:
@@ -20,15 +21,25 @@ jobs:
           key: ${{ secrets.VPS_SSH_KEY }}
           port: ${{ secrets.VPS_PORT }}
           script: |
-            # VPS上のプロジェクトディレクトリに移動
-            # ※ /var/www/fear_and_greed_new の部分は実際のパスに変更してください
+            set -e
+
             cd /var/www/fear_and_greed_new
-            
-            # 最新のコードを取得
+
             git pull origin main
-            
-            # 仮想環境を有効化して依存関係を更新
+
+            if [ ! -d venv ]; then
+              python3 -m venv venv
+            fi
+
             source venv/bin/activate
-            pip install -r requirements.txt
-            
+            python -m pip install --upgrade pip
+            python -m pip install -r requirements.txt
+
+            chmod +x scripts/install_cron.sh
+            PROJECT_DIR=/var/www/fear_and_greed_new scripts/install_cron.sh
+
+            if systemctl list-unit-files | grep -q '^fgi-api.service'; then
+              sudo systemctl restart fgi-api
+            fi
+
             echo "Deployment completed successfully!"
