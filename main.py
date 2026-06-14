@@ -1,5 +1,7 @@
 import os
 import logging
+import argparse
+import time
 import pandas as pd
 from datetime import datetime, timezone, timedelta
 from dotenv import load_dotenv
@@ -132,6 +134,20 @@ def process_ticker(ticker: str):
 
 if __name__ == "__main__":
     load_dotenv()
+
+    parser = argparse.ArgumentParser(description="Fear & Greed Index daily batch")
+    parser.add_argument(
+        "--test",
+        action="store_true",
+        help="テスト実行。取得した銘柄リストの先頭5件だけ処理し、GAS更新とLINE通知をスキップします。",
+    )
+    parser.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help="処理する銘柄数の上限。例: --limit 5",
+    )
+    args = parser.parse_args()
     
     # ==========================================
     # 1. 営業日判定（本番環境のみスキップする）
@@ -167,6 +183,20 @@ if __name__ == "__main__":
     except Exception as e:
         logger.error(f"Failed to fetch tickers: {e}")
         tickers = []
+
+    original_ticker_count = len(tickers)
+    if args.test:
+        tickers = tickers[:5]
+        logger.info(
+            f"Test mode enabled. Processing first {len(tickers)} of {original_ticker_count} tickers. "
+            "GAS update and LINE notification will be skipped."
+        )
+    elif args.limit is not None:
+        if args.limit <= 0:
+            logger.error("--limit must be greater than 0.")
+            exit(1)
+        tickers = tickers[:args.limit]
+        logger.info(f"Limit enabled. Processing first {len(tickers)} of {original_ticker_count} tickers.")
     
     if tickers:
         logger.info("Starting batch processing...")
@@ -175,18 +205,20 @@ if __name__ == "__main__":
             
             # 【追加】Yahoo!ファイナンスのアクセス制限（Rate Limit）を回避するため、
             # 1銘柄の処理が終わるごとに3秒間待機する
-            import time # (念のためここでインポートしても動作します)
             logger.info(f"Sleeping for 2 seconds to avoid rate limits...")
             time.sleep(2)
             
         logger.info("Batch processing completed.")
         
-        logger.info("Triggering GAS to update the Results sheet...")
-        try:
-            requests.post(GAS_URL, json={"action": "update_results"}).raise_for_status()
-            logger.info("GAS triggered successfully.")
-        except Exception as e:
-            logger.error(f"Failed to trigger GAS: {e}")
+        if args.test:
+            logger.info("Test mode enabled. Skipping GAS update trigger.")
+        else:
+            logger.info("Triggering GAS to update the Results sheet...")
+            try:
+                requests.post(GAS_URL, json={"action": "update_results"}).raise_for_status()
+                logger.info("GAS triggered successfully.")
+            except Exception as e:
+                logger.error(f"Failed to trigger GAS: {e}")
 
     # ==========================================
     # 3. LINEへ完了通知をブロードキャスト送信
@@ -194,7 +226,9 @@ if __name__ == "__main__":
     line_token = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
     spreadsheet_url = os.getenv("SPREADSHEET_URL", "（URL未設定）")
 
-    if line_token:
+    if args.test:
+        logger.info("Test mode enabled. Skipping LINE notification.")
+    elif line_token:
         logger.info("Sending broadcast message to LINE...")
         
         # LINEに送信するメッセージの内容
