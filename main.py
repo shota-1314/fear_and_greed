@@ -130,6 +130,23 @@ def process_ticker(ticker: str):
     except Exception as e:
         logger.error(f"Error processing {ticker}: {e}", exc_info=True)
 
+def trigger_gas_update(gas_url: str):
+    """
+    GASへ結果シート更新を依頼する。
+    Apps ScriptはHTTP 200でも本文にErrorを返すことがあるため、本文もログに残す。
+    """
+    response = requests.post(
+        gas_url,
+        json={"action": "update_results"},
+        timeout=60,
+    )
+    body = response.text.strip()
+    logger.info(f"GAS update response: status={response.status_code}, body={body[:500]}")
+    response.raise_for_status()
+
+    if body and body.lower().startswith("error"):
+        raise RuntimeError(f"GAS returned an error response: {body}")
+
 # --- main.py の末尾 ---
 
 if __name__ == "__main__":
@@ -189,7 +206,7 @@ if __name__ == "__main__":
         tickers = tickers[:5]
         logger.info(
             f"Test mode enabled. Processing first {len(tickers)} of {original_ticker_count} tickers. "
-            "GAS update and LINE notification will be skipped."
+            "GAS update and LINE notification will be sent with test messaging."
         )
     elif args.limit is not None:
         if args.limit <= 0:
@@ -212,7 +229,7 @@ if __name__ == "__main__":
         
         logger.info("Triggering GAS to update the Results sheet...")
         try:
-            requests.post(GAS_URL, json={"action": "update_results"}).raise_for_status()
+            trigger_gas_update(GAS_URL)
             logger.info("GAS triggered successfully.")
         except Exception as e:
             logger.error(f"Failed to trigger GAS: {e}")
