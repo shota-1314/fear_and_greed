@@ -210,15 +210,12 @@ if __name__ == "__main__":
             
         logger.info("Batch processing completed.")
         
-        if args.test:
-            logger.info("Test mode enabled. Skipping GAS update trigger.")
-        else:
-            logger.info("Triggering GAS to update the Results sheet...")
-            try:
-                requests.post(GAS_URL, json={"action": "update_results"}).raise_for_status()
-                logger.info("GAS triggered successfully.")
-            except Exception as e:
-                logger.error(f"Failed to trigger GAS: {e}")
+        logger.info("Triggering GAS to update the Results sheet...")
+        try:
+            requests.post(GAS_URL, json={"action": "update_results"}).raise_for_status()
+            logger.info("GAS triggered successfully.")
+        except Exception as e:
+            logger.error(f"Failed to trigger GAS: {e}")
 
     # ==========================================
     # 3. LINEへ完了通知をブロードキャスト送信
@@ -226,15 +223,19 @@ if __name__ == "__main__":
     line_token = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
     spreadsheet_url = os.getenv("SPREADSHEET_URL", "（URL未設定）")
 
-    if args.test:
-        logger.info("Test mode enabled. Skipping LINE notification.")
-    elif line_token:
+    if line_token:
         logger.info("Sending broadcast message to LINE...")
         
         # LINEに送信するメッセージの内容
+        notification_title = "【テスト実行】Fear & Greed Index 算出完了" if args.test else "本日のFear & Greed Index 算出完了"
+        notification_detail = (
+            f"テストモードで先頭{len(tickers)}件のみ処理しました。"
+            if args.test
+            else f"対象銘柄（{len(tickers)}件）のデータ更新とスプレッドシートへの反映が完了しました。"
+        )
         message_text = (
-            f"📊 本日のFear & Greed Index 算出完了\n\n"
-            f"対象銘柄（{len(tickers)}件）のデータ更新とスプレッドシートへの反映が完了しました。\n\n"
+            f"📊 {notification_title}\n\n"
+            f"{notification_detail}\n\n"
             f"▼最新の結果シートはこちら\n{spreadsheet_url}"
         )
         
