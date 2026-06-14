@@ -1,7 +1,7 @@
 import os
 import logging
 import psycopg2
-from psycopg2.extras import Json
+from psycopg2.extras import Json, execute_values
 import pandas as pd
 from dotenv import load_dotenv
 
@@ -29,20 +29,8 @@ def upsert_margin_ratio(ticker: str, date_str: str, margin_ratio: float):
     """
     週次信用倍率をPostgreSQLにUpsertする
     """
-    query = """
-        INSERT INTO weekly_margin_ratios (ticker, date, margin_ratio)
-        VALUES (%s, %s, %s)
-        ON CONFLICT (ticker, date)
-        DO UPDATE SET margin_ratio = EXCLUDED.margin_ratio;
-    """
-    try:
-        with get_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(query, (ticker, date_str, margin_ratio))
-        logger.info(f"Successfully upserted margin ratio for {ticker} on {date_str}")
-    except Exception as e:
-        logger.error(f"Failed to upsert margin ratio for {ticker}: {e}")
-        raise
+    upsert_margin_ratios(ticker, [{"date": date_str, "margin_ratio": margin_ratio}])
+    logger.info(f"Successfully upserted margin ratio for {ticker} on {date_str}")
 
 def upsert_margin_ratios(ticker: str, margin_ratios: list[dict]):
     """
@@ -54,7 +42,7 @@ def upsert_margin_ratios(ticker: str, margin_ratios: list[dict]):
 
     query = """
         INSERT INTO weekly_margin_ratios (ticker, date, margin_ratio)
-        VALUES (%s, %s, %s)
+        VALUES %s
         ON CONFLICT (ticker, date)
         DO UPDATE SET margin_ratio = EXCLUDED.margin_ratio;
     """
@@ -66,7 +54,7 @@ def upsert_margin_ratios(ticker: str, margin_ratios: list[dict]):
     try:
         with get_connection() as conn:
             with conn.cursor() as cur:
-                cur.executemany(query, values)
+                execute_values(cur, query, values)
         logger.info(f"Successfully upserted {len(values)} margin ratios for {ticker}")
     except Exception as e:
         logger.error(f"Failed to upsert margin ratios for {ticker}: {e}")
@@ -111,7 +99,10 @@ def get_margin_ratios(ticker: str) -> pd.DataFrame:
                 df = pd.read_sql_query(query, conn, params=(ticker,))
         
         if df.empty:
-            return pd.DataFrame(columns=["date", "margin_ratio"])
+            return pd.DataFrame(
+                {"margin_ratio": pd.Series(dtype="float64")},
+                index=pd.DatetimeIndex([], name="date"),
+            )
         
         df["date"] = pd.to_datetime(df["date"])
         df = df.set_index("date")
@@ -143,3 +134,4 @@ def upsert_daily_score(date_str: str, ticker: str, raw_fgi: float, filtered_fgi:
     except Exception as e:
         logger.error(f"Failed to upsert daily score for {ticker}: {e}")
         raise
+

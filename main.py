@@ -12,7 +12,7 @@ import jpholiday # 祝日判定用に追加
 JST = timezone(timedelta(hours=9), 'JST')
 
 from fetcher import fetch_ohlcv, scrape_margin_ratios
-from db import get_latest_margin_date, upsert_margin_ratios, get_margin_ratios, upsert_daily_score
+from db import upsert_margin_ratios, get_margin_ratios, upsert_daily_score
 from calculator import calculate_indicators
 
 # ログ設定
@@ -23,7 +23,9 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 def process_ticker(ticker: str):
+    ticker_started_at = time.perf_counter()
     logger.info(f"--- Starting processing for {ticker} ---")
+    margin_df = pd.DataFrame(columns=["margin_ratio"])
     
     try:
         # 1. & 2. 株探データの差分更新ロジック
@@ -37,8 +39,12 @@ def process_ticker(ticker: str):
             else:
                 logger.info(f"No previous margin data found for {ticker}. Will run initial bulk insert.")
 
-            # 株探から複数ページ分（約60週分）をスクレイピング
-            scraped_ratios = scrape_margin_ratios(ticker)
+            daily_margin_pages = int(os.getenv("DAILY_MARGIN_SCRAPE_PAGES", "1"))
+            initial_margin_pages = int(os.getenv("INITIAL_MARGIN_SCRAPE_PAGES", "2"))
+            margin_pages = initial_margin_pages if margin_df.empty else daily_margin_pages
+
+            # 通常は最新ページのみ取得し、初回だけ複数ページで過去データを埋める
+            scraped_ratios = scrape_margin_ratios(ticker, max_pages=margin_pages)
 
             # DBに存在しない（未登録の）データのみを差分抽出
             new_ratios = []
@@ -50,9 +56,15 @@ def process_ticker(ticker: str):
             if new_ratios:
                 logger.info(f"Found {len(new_ratios)} new margin ratio records for {ticker}. Upserting...")
                 upsert_margin_ratios(ticker, new_ratios)
-                
-                # 過去データが追加されたので、その後のC3計算のためにDBから最新状態を再取得する
-                margin_df = get_margin_ratios(ticker)
+
+                new_margin_df = pd.DataFrame(new_ratios)
+                new_margin_df["date"] = pd.to_datetime(new_margin_df["date"])
+                new_margin_df = new_margin_df.set_index("date")[["margin_ratio"]]
+                margin_df = (
+                    pd.concat([margin_df, new_margin_df])
+                    .sort_index()
+                    .loc[lambda frame: ~frame.index.duplicated(keep="last")]
+                )
             else:
                 logger.info(f"No new margin ratio data found for {ticker}. DB is up to date.")
 
@@ -129,6 +141,9 @@ def process_ticker(ticker: str):
         
     except Exception as e:
         logger.error(f"Error processing {ticker}: {e}", exc_info=True)
+    finally:
+        elapsed = time.perf_counter() - ticker_started_at
+        logger.info(f"--- Finished processing for {ticker} in {elapsed:.2f}s ---")
 
 def trigger_gas_update(gas_url: str):
     """
@@ -156,7 +171,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--test",
         action="store_true",
-        help="テスト実行。取得した銘柄リストの先頭5件だけ処理し、GAS更新とLINE通知をスキップします。",
+        help="テスト実行。取得した銘柄リストの先頭5件だけ処理し、LINE通知にテスト実行であることを明記します。",
     )
     parser.add_argument(
         "--limit",
@@ -165,6 +180,8 @@ if __name__ == "__main__":
         help="処理する銘柄数の上限。例: --limit 5",
     )
     args = parser.parse_args()
+    batch_started_at = time.perf_counter()
+    request_sleep_seconds = float(os.getenv("REQUEST_SLEEP_SECONDS", "1"))
     
     # ==========================================
     # 1. 営業日判定（本番環境のみスキップする）
@@ -217,13 +234,13 @@ if __name__ == "__main__":
     
     if tickers:
         logger.info("Starting batch processing...")
-        for ticker in tickers:
+        for index, ticker in enumerate(tickers, start=1):
             process_ticker(str(ticker).strip())
             
-            # 【追加】Yahoo!ファイナンスのアクセス制限（Rate Limit）を回避するため、
-            # 1銘柄の処理が終わるごとに3秒間待機する
-            logger.info(f"Sleeping for 2 seconds to avoid rate limits...")
-            time.sleep(2)
+            # Yahoo!ファイナンスや株探のアクセス制限を避けるため、銘柄間だけ待機する
+            if index < len(tickers) and request_sleep_seconds > 0:
+                logger.info(f"Sleeping for {request_sleep_seconds:.1f} seconds to avoid rate limits...")
+                time.sleep(request_sleep_seconds)
             
         logger.info("Batch processing completed.")
         
@@ -279,4 +296,5 @@ if __name__ == "__main__":
     else:
         logger.info("LINE_CHANNEL_ACCESS_TOKEN is not set. Skipping LINE notification.")
 
-    logger.info("All pipeline finished.")
+    total_elapsed = time.perf_counter() - batch_started_at
+    logger.info(f"All pipeline finished in {total_elapsed:.2f}s.")

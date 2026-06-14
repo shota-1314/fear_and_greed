@@ -19,3 +19,4 @@ CREATE TABLE IF NOT EXISTS daily_sentiment_scores (
 
 -- 検索を高速化するためのインデックス（オプション）
 CREATE INDEX IF NOT EXISTS idx_daily_sentiment_scores_ticker ON daily_sentiment_scores(ticker);
+CREATE INDEX IF NOT EXISTS idx_daily_sentiment_scores_date ON daily_sentiment_scores(date);
