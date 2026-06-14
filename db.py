@@ -1,110 +1,98 @@
 import os
 import logging
-from supabase import create_client, Client
-from dotenv import load_dotenv
+import psycopg2
+from psycopg2.extras import Json
 import pandas as pd
+from dotenv import load_dotenv
 
 load_dotenv()
 logger = logging.getLogger(__name__)
 
-SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+# PostgreSQLの接続情報
+DB_HOST = os.getenv("DB_HOST", "localhost")
+DB_PORT = os.getenv("DB_PORT", "5432")
+DB_NAME = os.getenv("DB_NAME", "fear_and_greed")
+DB_USER = os.getenv("DB_USER", "postgres")
+DB_PASS = os.getenv("DB_PASS", "password")
 
-if not SUPABASE_URL or not SUPABASE_KEY:
-    raise ValueError("SUPABASE_URL and SUPABASE_KEY must be set in environment variables.")
-
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+def get_connection():
+    """PostgreSQLへの接続を取得する"""
+    return psycopg2.connect(
+        host=DB_HOST,
+        port=DB_PORT,
+        dbname=DB_NAME,
+        user=DB_USER,
+        password=DB_PASS
+    )
 
 def upsert_margin_ratio(ticker: str, date_str: str, margin_ratio: float):
     """
-    週次信用倍率をSupabaseにUpsertする
+    週次信用倍率をPostgreSQLにUpsertする
+    """
+    query = """
+        INSERT INTO weekly_margin_ratios (ticker, date, margin_ratio)
+        VALUES (%s, %s, %s)
+        ON CONFLICT (ticker, date)
+        DO UPDATE SET margin_ratio = EXCLUDED.margin_ratio;
     """
     try:
-        data = {
-            "ticker": ticker,
-            "date": date_str,
-            "margin_ratio": margin_ratio
-        }
-        response = supabase.table("weekly_margin_ratios").upsert(data).execute()
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(query, (ticker, date_str, margin_ratio))
         logger.info(f"Successfully upserted margin ratio for {ticker} on {date_str}")
-        return response
     except Exception as e:
         logger.error(f"Failed to upsert margin ratio for {ticker}: {e}")
         raise
 
-def get_latest_margin_date(ticker: str) -> str | None:
-    """
-    指定銘柄のDBに保存されている最新の信用倍率の日付を取得する
-    """
-    try:
-        # 日付の降順で1件だけ取得
-        response = supabase.table("weekly_margin_ratios").select("date").eq("ticker", ticker).order("date", desc=True).limit(1).execute()
-        if response.data:
-            return response.data[0]["date"]
-        return None
-    except Exception as e:
-        logger.error(f"Failed to fetch latest margin date for {ticker}: {e}")
-        return None
-
-def upsert_margin_ratios(ticker: str, ratios_data: list[dict]):
-    """
-    複数件の信用倍率データをSupabaseに一括Upsertする
-    ratios_data: [{"date": "YYYY-MM-DD", "margin_ratio": 1.5}, ...]
-    """
-    if not ratios_data:
-        return
-
-    try:
-        # DB保存用のフォーマットに整形
-        insert_data = [
-            {
-                "ticker": ticker,
-                "date": item["date"],
-                "margin_ratio": item["margin_ratio"]
-            }
-            for item in ratios_data
-        ]
-        # リストを渡すことで、Supabaseが一括Upsert(Bulk Insert)を行ってくれます
-        response = supabase.table("weekly_margin_ratios").upsert(insert_data).execute()
-        logger.info(f"Successfully upserted {len(insert_data)} margin ratios for {ticker}")
-        return response
-    except Exception as e:
-        logger.error(f"Failed to upsert margin ratios for {ticker}: {e}")
-        raise
-
-def upsert_daily_score(date_str: str, ticker: str, raw_fgi: float, filtered_fgi: float, indicators: dict):
-    """
-    計算された日次スコアをSupabaseにUpsertする
-    """
-    try:
-        data = {
-            "date": date_str,
-            "ticker": ticker,
-            "raw_fgi": raw_fgi,
-            "filtered_fgi": filtered_fgi,
-            "indicators": indicators
-        }
-        response = supabase.table("daily_sentiment_scores").upsert(data).execute()
-        logger.info(f"Successfully upserted daily score for {ticker} on {date_str}")
-        return response
-    except Exception as e:
-        logger.error(f"Failed to upsert daily score for {ticker}: {e}")
-        raise
-    
 def get_margin_ratios(ticker: str) -> pd.DataFrame:
     """
-    Supabaseから過去の信用倍率を取得し、DataFrameとして返す
+    PostgreSQLから過去の信用倍率を取得し、DataFrameとして返す
+    """
+    query = """
+        SELECT date, margin_ratio
+        FROM weekly_margin_ratios
+        WHERE ticker = %s
+        ORDER BY date;
     """
     try:
-        response = supabase.table("weekly_margin_ratios").select("*").eq("ticker", ticker).order("date").execute()
-        data = response.data
-        if not data:
+        with get_connection() as conn:
+            # pandasのread_sql_queryを使用して直接DataFrameに読み込む
+            import warnings
+            with warnings.catch_warnings():
+                # psycopg2のコネクションを直接渡す際の警告を抑制
+                warnings.simplefilter('ignore', UserWarning)
+                df = pd.read_sql_query(query, conn, params=(ticker,))
+        
+        if df.empty:
             return pd.DataFrame(columns=["date", "margin_ratio"])
         
-        df = pd.DataFrame(data)
         df["date"] = pd.to_datetime(df["date"])
         df = df.set_index("date")
         return df[["margin_ratio"]]
     except Exception as e:
         logger.error(f"Failed to fetch margin ratios for {ticker}: {e}")
+        raise
+
+def upsert_daily_score(date_str: str, ticker: str, raw_fgi: float, filtered_fgi: float, indicators: dict):
+    """
+    計算された日次スコアをPostgreSQLにUpsertする
+    """
+    query = """
+        INSERT INTO daily_sentiment_scores (date, ticker, raw_fgi, filtered_fgi, indicators, created_at)
+        VALUES (%s, %s, %s, %s, %s, NOW())
+        ON CONFLICT (date, ticker)
+        DO UPDATE SET 
+            raw_fgi = EXCLUDED.raw_fgi,
+            filtered_fgi = EXCLUDED.filtered_fgi,
+            indicators = EXCLUDED.indicators,
+            created_at = NOW();
+    """
+    try:
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                # dictをJSONB型として保存するためにpsycopg2.extras.Jsonを使用
+                cur.execute(query, (date_str, ticker, raw_fgi, filtered_fgi, Json(indicators)))
+        logger.info(f"Successfully upserted daily score for {ticker} on {date_str}")
+    except Exception as e:
+        logger.error(f"Failed to upsert daily score for {ticker}: {e}")
         raise
