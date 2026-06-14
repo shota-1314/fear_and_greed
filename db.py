@@ -44,6 +44,53 @@ def upsert_margin_ratio(ticker: str, date_str: str, margin_ratio: float):
         logger.error(f"Failed to upsert margin ratio for {ticker}: {e}")
         raise
 
+def upsert_margin_ratios(ticker: str, margin_ratios: list[dict]):
+    """
+    複数件の週次信用倍率をPostgreSQLにUpsertする
+    """
+    if not margin_ratios:
+        logger.info(f"No margin ratios to upsert for {ticker}")
+        return
+
+    query = """
+        INSERT INTO weekly_margin_ratios (ticker, date, margin_ratio)
+        VALUES (%s, %s, %s)
+        ON CONFLICT (ticker, date)
+        DO UPDATE SET margin_ratio = EXCLUDED.margin_ratio;
+    """
+    values = [
+        (ticker, item["date"], item.get("margin_ratio"))
+        for item in margin_ratios
+    ]
+
+    try:
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.executemany(query, values)
+        logger.info(f"Successfully upserted {len(values)} margin ratios for {ticker}")
+    except Exception as e:
+        logger.error(f"Failed to upsert margin ratios for {ticker}: {e}")
+        raise
+
+def get_latest_margin_date(ticker: str):
+    """
+    指定銘柄の最新信用倍率日付を取得する
+    """
+    query = """
+        SELECT MAX(date)
+        FROM weekly_margin_ratios
+        WHERE ticker = %s;
+    """
+    try:
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(query, (ticker,))
+                result = cur.fetchone()
+        return result[0] if result else None
+    except Exception as e:
+        logger.error(f"Failed to fetch latest margin date for {ticker}: {e}")
+        raise
+
 def get_margin_ratios(ticker: str) -> pd.DataFrame:
     """
     PostgreSQLから過去の信用倍率を取得し、DataFrameとして返す
